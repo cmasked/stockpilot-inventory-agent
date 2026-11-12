@@ -1,3 +1,9 @@
+PS D: \building ai > git push origin main
+fatal: not a git repository(or any of the parent directories): .git
+PS D: \building ai > git status
+fatal: not a git repository(or any of the parent directories): .git
+PS D: \building ai > 
+
 import "server-only";
 import { z } from "zod";
 import { defineTool, type AgentTool } from "./defineTool";
@@ -91,14 +97,14 @@ export const getLowStockItems = defineTool({
           days_remaining: daysRemaining,
           supplier: supplierObj
             ? {
-                id: supplierObj.id,
-                name: supplierObj.name,
-                city: supplierObj.city,
-                contact_email: supplierObj.contact_email,
-                lead_time_days: supplierObj.lead_time_days,
-                rating: Number(supplierObj.rating),
-                min_order_value: Number(supplierObj.min_order_value),
-              }
+              id: supplierObj.id,
+              name: supplierObj.name,
+              city: supplierObj.city,
+              contact_email: supplierObj.contact_email,
+              lead_time_days: supplierObj.lead_time_days,
+              rating: Number(supplierObj.rating),
+              min_order_value: Number(supplierObj.min_order_value),
+            }
             : null,
         };
       });
@@ -253,10 +259,277 @@ export const estimateDaysOfStockLeft = defineTool({
 });
 
 /**
- * Registered Read Tools for H3
+ * Tool 4: createPurchaseOrder (WRITE TOOL — H4)
+ * Purpose: Generates a draft purchase order and its associated line items in Supabase.
+ * Enforces business rules:
+ * - 1 PO per supplier.
+ * - Quantities must match product reorder_qty (or positive integer specified).
+ * - Authoritative pricing directly from database (never hallucinated).
+ * - Expected delivery date = current_date + supplier.lead_time_days.
+ * - Atomic creation of header and line items with rollback on error.
+ */
+export const createPurchaseOrder = defineTool({
+  name: "createPurchaseOrder",
+  description:
+    "Use this when the store manager asks to draft, generate, or create a purchase order for restocking depleted inventory.",
+  writes: true,
+  schema: z.object({
+    supplier_id: z
+      .string()
+      .trim()
+      .min(1)
+      .describe("Supplier ID for this purchase order (e.g. SUP01)"),
+    notes: z
+      .string()
+      .optional()
+      .describe("Optional operational note or remarks for the purchase order"),
+    items: z
+      .array(
+        z.object({
+          sku: z.string().trim().min(1).describe("Product SKU to reorder (e.g. SKU001)"),
+          quantity: z
+            .number()
+            .int()
+            .positive()
+            .describe("Quantity to order (must be positive integer, typically matching reorder_qty)"),
+        })
+      )
+      .min(1)
+      .describe("List of line items to order for this supplier"),
+  }),
+  run: async ({ supplier_id, notes, items }) => {
+    const supabase = getSupabase();
+
+    // 1. Verify supplier existence and fetch lead time
+    const { data: supplier, error: suppErr } = await supabase
+      .from("suppliers")
+      .select("id, name, lead_time_days, min_order_value")
+      .eq("id", supplier_id.trim())
+      .single();
+
+    if (suppErr || !supplier) {
+      throw new Error(`Supplier '${supplier_id}' was not found in the database. Cannot create purchase order.`);
+    }
+
+    // 2. Fetch authoritative product pricing and verify supplier relationship
+    const requestedSkus = items.map((i) => i.sku.trim());
+    const { data: dbProducts, error: prodErr } = await supabase
+      .from("products")
+      .select("sku, name, supplier_id, unit_cost, reorder_qty, unit")
+      .in("sku", requestedSkus);
+
+    if (prodErr || !dbProducts || dbProducts.length === 0) {
+      throw new Error(`Failed to load product details: ${prodErr?.message || "No products found."}`);
+    }
+
+    const productMap = new Map(dbProducts.map((p) => [p.sku, p]));
+
+    // Validate every item belongs strictly to this supplier
+    for (const item of items) {
+      const prod = productMap.get(item.sku.trim());
+      if (!prod) {
+        throw new Error(`Product '${item.sku}' not found in database.`);
+      }
+      if (prod.supplier_id !== supplier.id) {
+        throw new Error(
+          `Product '${item.sku}' (${prod.name}) belongs to supplier '${prod.supplier_id}', not '${supplier.id}'. Each PO must have items from exactly 1 supplier.`
+        );
+      }
+    }
+
+    // 3. Compute delivery date and line totals
+    const leadTime = Number(supplier.lead_time_days) || 1;
+    const expectedDelivery = new Date();
+    expectedDelivery.setDate(expectedDelivery.getDate() + leadTime);
+    const expectedDateStr = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(expectedDelivery);
+
+    let calculatedTotal = 0;
+    const validatedItems = items.map((item) => {
+      const prod = productMap.get(item.sku.trim())!;
+      const unitCost = Number(prod.unit_cost);
+      const lineCost = Number((item.quantity * unitCost).toFixed(2));
+      calculatedTotal += lineCost;
+
+      return {
+        sku: prod.sku,
+        name: prod.name,
+        unit: prod.unit,
+        quantity: item.quantity,
+        unit_cost: unitCost,
+        line_total: lineCost,
+      };
+    });
+
+    calculatedTotal = Number(calculatedTotal.toFixed(2));
+
+    // 4. Create purchase_orders record with initial status 'draft'
+    const { data: po, error: poErr } = await supabase
+      .from("purchase_orders")
+      .insert({
+        supplier_id: supplier.id,
+        status: "draft",
+        total_cost: calculatedTotal,
+        expected_date: expectedDateStr,
+        notes: notes || `Autonomous replenishment drafted by StockPilot for ${supplier.name}`,
+      })
+      .select("id, supplier_id, status, total_cost, expected_date, notes, created_at")
+      .single();
+
+    if (poErr || !po) {
+      throw new Error(`Failed to insert purchase order header: ${poErr?.message}`);
+    }
+
+    // 5. Insert line items (with rollback if line insertion fails)
+    const itemsPayload = validatedItems.map((item) => ({
+      purchase_order_id: po.id,
+      sku: item.sku,
+      quantity: item.quantity,
+      unit_cost: item.unit_cost,
+    }));
+
+    const { error: itemsErr } = await supabase.from("purchase_order_items").insert(itemsPayload);
+
+    if (itemsErr) {
+      // Rollback header to avoid orphan records
+      await supabase.from("purchase_orders").delete().eq("id", po.id);
+      throw new Error(`Failed to insert line items: ${itemsErr.message}. Order rolled back.`);
+    }
+
+    // Check minimum order value warning (informational)
+    const minOrderVal = Number(supplier.min_order_value) || 0;
+    let minOrderWarning: string | undefined;
+    if (minOrderVal > 0 && calculatedTotal < minOrderVal) {
+      minOrderWarning = `Total cost (₹${calculatedTotal}) is below supplier minimum order value of ₹${minOrderVal}.`;
+    }
+
+    return {
+      success: true,
+      purchase_order_id: po.id,
+      supplier_id: supplier.id,
+      supplier_name: supplier.name,
+      status: po.status,
+      total_cost: calculatedTotal,
+      expected_delivery_date: expectedDateStr,
+      lead_time_days: leadTime,
+      item_count: validatedItems.length,
+      items: validatedItems,
+      warning: minOrderWarning,
+    };
+  },
+});
+
+/**
+ * Tool 5: updateStock (WRITE TOOL — Receiving & Stock Replenishment)
+ * Purpose: Replenish inventory stock levels when goods or a purchase order are physically received.
+ */
+export const updateStock = defineTool({
+  name: "updateStock",
+  description:
+    "Use this when goods or an existing purchase order have arrived at the FreshMart store to replenish inventory and mark the purchase order as received.",
+  writes: true,
+  schema: z.object({
+    purchase_order_id: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("ID of the purchase order being received (e.g. 1)"),
+    adjustments: z
+      .array(
+        z.object({
+          sku: z.string().trim().min(1).describe("Product SKU to adjust"),
+          quantity_received: z.number().int().positive().describe("Units received to add to stock"),
+        })
+      )
+      .optional()
+      .describe("Manual stock adjustments if not linking a full purchase order"),
+  }),
+  run: async ({ purchase_order_id, adjustments }) => {
+    const supabase = getSupabase();
+    const updatedProducts: Array<{ sku: string; previous_stock: number; new_stock: number }> = [];
+
+    if (purchase_order_id) {
+      const { data: po, error: poErr } = await supabase
+        .from("purchase_orders")
+        .select("id, status, supplier_id")
+        .eq("id", purchase_order_id)
+        .single();
+
+      if (poErr || !po) {
+        throw new Error(`Purchase order #${purchase_order_id} not found.`);
+      }
+
+      if (po.status === "received") {
+        throw new Error(`Purchase order #${purchase_order_id} has already been marked as received.`);
+      }
+
+      const { data: items, error: itemsErr } = await supabase
+        .from("purchase_order_items")
+        .select("sku, quantity")
+        .eq("purchase_order_id", purchase_order_id);
+
+      if (itemsErr || !items || items.length === 0) {
+        throw new Error(`No items found for purchase order #${purchase_order_id}.`);
+      }
+
+      for (const item of items) {
+        const { data: prod } = await supabase
+          .from("products")
+          .select("stock_qty")
+          .eq("sku", item.sku)
+          .single();
+
+        const current = prod?.stock_qty ?? 0;
+        const updated = current + item.quantity;
+
+        await supabase.from("products").update({ stock_qty: updated }).eq("sku", item.sku);
+        updatedProducts.push({ sku: item.sku, previous_stock: current, new_stock: updated });
+      }
+
+      await supabase.from("purchase_orders").update({ status: "received" }).eq("id", purchase_order_id);
+
+      return {
+        success: true,
+        purchase_order_id,
+        status: "received",
+        message: `PO #${purchase_order_id} marked as received. Stock replenished for ${updatedProducts.length} items.`,
+        updated_products: updatedProducts,
+      };
+    }
+
+    if (adjustments && adjustments.length > 0) {
+      for (const adj of adjustments) {
+        const { data: prod } = await supabase
+          .from("products")
+          .select("stock_qty")
+          .eq("sku", adj.sku)
+          .single();
+
+        const current = prod?.stock_qty ?? 0;
+        const updated = current + adj.quantity_received;
+
+        await supabase.from("products").update({ stock_qty: updated }).eq("sku", adj.sku);
+        updatedProducts.push({ sku: adj.sku, previous_stock: current, new_stock: updated });
+      }
+
+      return {
+        success: true,
+        message: `Stock updated for ${updatedProducts.length} products.`,
+        updated_products: updatedProducts,
+      };
+    }
+
+    throw new Error("Must provide either a purchase_order_id or adjustments array to update stock.");
+  },
+});
+
+/**
+ * All Registered Agent Tools
  */
 export const tools: AgentTool[] = [
   getLowStockItems,
   getSupplierDetails,
   estimateDaysOfStockLeft,
+  createPurchaseOrder,
+  updateStock,
 ];

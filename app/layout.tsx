@@ -1,16 +1,15 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
-// YOUR JOB: change the title and description for your app.
 export const metadata: Metadata = {
-  title: "Hackathon Starter",
-  description: "Next.js + Supabase + Gemini function calling starter",
+  title: "StockPilot — Inventory Restock Agent",
+  description: "AI-Powered Inventory Monitoring & Purchase Order Restocking Assistant (PS2)",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-screen">{children}</body>
+      <body className="min-h-screen" suppressHydrationWarning>{children}</body>
     </html>
   );
 }

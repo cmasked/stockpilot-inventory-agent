@@ -79,7 +79,7 @@ export default function AgentChat({ onDataChanged, prefillPrompt }: AgentChatPro
           </p>
         </div>
         <span className="text-[11px] font-mono bg-slate-200/80 px-2 py-0.5 rounded text-slate-700">
-          gemini-3.8-flash
+          gemini-3.5-flash-lite
         </span>
       </div>
 
