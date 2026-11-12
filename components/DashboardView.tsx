@@ -274,3 +274,4 @@ export default function DashboardView({ refreshKey, onNavigateToTab }: Dashboard
     </div>
   );
 }
+

@@ -55,3 +55,4 @@ export async function GET(request: Request) {
     low_stock_count: lowStockCount,
   });
 }
+

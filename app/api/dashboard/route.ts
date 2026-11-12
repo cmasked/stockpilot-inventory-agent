@@ -82,3 +82,4 @@ export async function GET() {
     recent_orders: orders.slice(0, 5),
   });
 }
+

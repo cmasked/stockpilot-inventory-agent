@@ -274,3 +274,4 @@ export default function ProductCatalog({ refreshKey, onNavigateToTab }: ProductC
     </div>
   );
 }
+
