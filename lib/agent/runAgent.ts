@@ -9,7 +9,7 @@ import { buildSystemPrompt } from "./systemPrompt";
 import type { AgentResult, AgentStep } from "./types";
 
 /** Stops the agent from looping forever and using up your Gemini quota. */
-const MAX_ROUNDS = 5;
+const MAX_ROUNDS = 8;
 
 /**
  * THE AGENT LOOP

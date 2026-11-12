@@ -8,3 +8,10 @@ export function weekdayInIndia(): string {
     new Date()
   );
 }
+
+/** Calculates date YYYY-MM-DD after adding n days in IST */
+export function addDaysInIndia(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(d);
+}
