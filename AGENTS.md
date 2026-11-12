@@ -29,3 +29,4 @@ Identifies low stock, estimates depletion, groups by supplier, and drafts Purcha
 - Core tools: `getLowStockItems`, `getSupplierDetails`, `estimateDaysOfStockLeft`, `createPurchaseOrder`.
 - Read tools query Supabase directly; write tools enforce validation before mutating tables.
 - Return compact JSON objects; throw descriptive Errors on failure.
+

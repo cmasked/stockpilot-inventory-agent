@@ -25,3 +25,4 @@ StockPilot: AI-powered inventory restocking agent for FreshMart (Velachery branc
 - Write tools (`createPurchaseOrder`) insert POs and line items atomically.
 - Do not add `user_id` parameters — schema does not have user tenancy.
 - Keep tool responses concise for Gemini context efficiency.
+
