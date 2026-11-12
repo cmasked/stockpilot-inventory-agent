@@ -1,9 +1,3 @@
-PS D: \building ai > git push origin main
-fatal: not a git repository(or any of the parent directories): .git
-PS D: \building ai > git status
-fatal: not a git repository(or any of the parent directories): .git
-PS D: \building ai > 
-
 import "server-only";
 import { z } from "zod";
 import { defineTool, type AgentTool } from "./defineTool";
